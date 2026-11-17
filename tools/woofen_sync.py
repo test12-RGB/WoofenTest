@@ -22,7 +22,7 @@ import sys
 
 BASE_TOKEN = "Oo7LbHcD0aPFDCsYqeCc4jHEnnb"
 TABLE_ID = "tblIVSPELHJJidVJ"
-REPO = "test12-RGB/WoofenTest"
+REPO = "brainvue-tech/TestBug"
 MASK_NAMES = True  # 仓库为公开，责任人脱敏；改为 False 可保留真实姓名
 
 STATE_DIR = "/home/user/Doubao/chats/38454352490236674/.woofen-sync"
@@ -32,6 +32,17 @@ LOG_FILE = os.path.join(STATE_DIR, "sync.log")
 LEVELS = ("P0", "P1", "P2", "P3")
 STATUS_LABELS = ("invalid", "duplicate", "fixed-pending-verify")
 PASS_VERIFY = ("验证PASS", "复测通过")
+
+# 研发归属类 -> GitHub 标签（与飞书选项一一对应）
+DEV_LABELS = ("已修复-待验证", "已修复-下个版本验证", "未修复-待产品确认", "未修复-无法修复")
+DEV_MAP = {
+    "已修复-待验证": "已修复-待验证",
+    "已修复-下个版本验证": "已修复-下个版本验证",
+    "需求未明确需产品确认": "未修复-待产品确认",
+    "未修复-无法修复": "未修复-无法修复",
+}
+VERIFY_LABELS = ("验证PASS", "验证FAIL")
+ALL_MANAGED_LABELS = LEVELS + STATUS_LABELS + DEV_LABELS + VERIFY_LABELS
 
 
 # ---------------------------------------------------------------- 基础工具
@@ -136,6 +147,12 @@ def build_issue(row):
         labels.append("duplicate")
     elif "已修复" in dev:
         labels.append("fixed-pending-verify")
+    if dev in DEV_MAP:
+        labels.append(DEV_MAP[dev])
+    if any(p in verify for p in PASS_VERIFY):
+        labels.append("验证PASS")
+    elif "FAIL" in verify.upper() or "不通过" in verify:
+        labels.append("验证FAIL")
     return {"title": title, "body": body, "labels": labels,
             "level": level, "state": state, "state_reason": reason,
             "status": {"verify": verify, "dev": dev, "level": level}}
@@ -203,7 +220,7 @@ def gh(*args, data=None):
 
 def set_labels(number, desired, current, dry):
     to_add = [l for l in desired if l not in current]
-    to_drop = [l for l in current if l not in desired and l in LEVELS + STATUS_LABELS]
+    to_drop = [l for l in current if l not in desired and l in ALL_MANAGED_LABELS]
     if dry:
         if to_add or to_drop:
             log(f"  [dry] labels #{number} +{to_add} -{to_drop}")
