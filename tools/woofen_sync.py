@@ -44,6 +44,18 @@ DEV_MAP = {
 VERIFY_LABELS = ("验证PASS", "验证FAIL")
 ALL_MANAGED_LABELS = LEVELS + STATUS_LABELS + DEV_LABELS + VERIFY_LABELS
 
+# GitHub 标签 -> 飞书「研发归属类」选项（研发打结果后回写）
+DEV_LABEL_TO_FEISHU = {
+    "已修复-待验证": "已修复-待验证",
+    "已修复-下个版本验证": "已修复-下个版本验证",
+    "未修复-待产品确认": "需求未明确需产品确认",
+    "未修复-无法修复": "未修复-无法修复",
+}
+# GitHub 标签 -> 飞书「测试回归验证结果」选项
+VERIFY_LABEL_TO_FEISHU = {"验证PASS": "验证PASS", "验证FAIL": "验证FAIL"}
+# 研发打了「已修复」类标签但还没出验证结论时，飞书验证结果置为待验证
+PENDING_VERIFY = ("待验证",)
+
 
 # ---------------------------------------------------------------- 基础工具
 
@@ -246,27 +258,62 @@ def create_issue(payload, dry):
 
 
 def gh_status_labels(issue):
-    return sorted(l for l in issue["labels"] if l in STATUS_LABELS)
+    return sorted(l for l in issue["labels"] if l in STATUS_LABELS + DEV_LABELS + VERIFY_LABELS)
 
 
 def bitable_fields_from_issue(issue, row):
-    """GitHub 状态 -> 飞书状态字段（只处理语义明确的迁移，避免覆盖飞书已有判定）"""
+    """GitHub 状态/标签 -> 飞书状态字段（研发在仓库上打结果后自动回写）"""
     labels = set(issue["labels"])
     verify = txt(row.get("测试回归验证结果"))
-    if issue["state"] == "closed":
+    dev = txt(row.get("研发归属类"))
+    out = {}
+
+    # 1) 非问题 / 重复问题：最高优先级
+    if issue["state"] == "closed" or "invalid" in labels or "duplicate" in labels:
         if "invalid" in labels:
-            if verify == "非问题":
-                return {}
-            return {"测试回归验证结果": ["非问题"], "研发归属类": ["非问题"]}
+            if verify != "非问题":
+                out["测试回归验证结果"] = ["非问题"]
+            if dev != "非问题":
+                out["研发归属类"] = ["非问题"]
+            return out
         if "duplicate" in labels:
-            return {"研发归属类": ["重复问题"]} if txt(row.get("研发归属类")) != "重复问题" else {}
+            if dev != "重复问题":
+                out["研发归属类"] = ["重复问题"]
+            return out
+
+    # 2) 研发归属类标签（已修复-待验证 / 已修复-下个版本验证 / 未修复-待产品确认 / 未修复-无法修复）
+    dev_label = next((l for l in DEV_LABELS if l in labels), None)
+    if dev_label:
+        target = DEV_LABEL_TO_FEISHU[dev_label]
+        if dev != target:
+            out["研发归属类"] = [target]
+
+    # 3) 验证标签
+    if "验证FAIL" in labels:
+        if not any(x in verify for x in ("FAIL", "不通过")):
+            out["测试回归验证结果"] = ["验证FAIL"]
+        return out
+    if "验证PASS" in labels:
+        if not any(x in verify for x in PASS_VERIFY):
+            out["测试回归验证结果"] = ["验证PASS"]
+        return out
+
+    # 4) 已修复但验证结果还空着 -> 待验证（不覆盖飞书已有的「待修复」等结论）
+    if dev_label and dev_label.startswith("已修复") and not verify:
+        out["测试回归验证结果"] = ["待验证"]
+        return out
+
+    # 5) 其余：关闭且无任何状态标签时，沿用历史上「关闭即视为验证通过」的判定
+    if issue["state"] == "closed":
         if any(x in verify for x in PASS_VERIFY + ("非问题",)):
-            return {}
-        return {"测试回归验证结果": ["验证PASS"]}
-    # 重新打开：只有原本已验证通过/已判定非问题的，才回到待修复
+            return out
+        out["测试回归验证结果"] = ["验证PASS"]
+        return out
+
+    # 6) 重新打开：原本已验证通过/非问题的，回到待修复
     if any(x in verify for x in PASS_VERIFY) or verify == "非问题":
-        return {"测试回归验证结果": ["待修复"]}
-    return {}
+        out["测试回归验证结果"] = ["待修复"]
+    return out
 
 
 # ---------------------------------------------------------------- 主流程
@@ -321,7 +368,7 @@ def main():
                 "bitable_hash": content_hash,
                 "bitable_status": built["status"],
                 "gh_state": built["state"], "gh_labels": sorted(built["labels"]),
-                "gh_labels_status": sorted(l for l in built["labels"] if l in STATUS_LABELS),
+                "gh_labels_status": sorted(l for l in built["labels"] if l in STATUS_LABELS + DEV_LABELS + VERIFY_LABELS),
                 "issue_updated_at": resp.get("updated_at"),
             }
             created += 1
@@ -404,7 +451,7 @@ def main():
             entry["bitable_status"] = cur_status
             entry["gh_state"] = cur_state
             entry["gh_labels"] = sorted(cur_labels)
-            entry["gh_labels_status"] = sorted(l for l in cur_labels if l in STATUS_LABELS)
+            entry["gh_labels_status"] = sorted(l for l in cur_labels if l in STATUS_LABELS + DEV_LABELS + VERIFY_LABELS)
             entry["issue_updated_at"] = issue["updated_at"]
 
     if not dry:
