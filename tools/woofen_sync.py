@@ -52,8 +52,14 @@ ASSIGNEE_MAP = {"柴金星": "1471251198", "李会会": "ByteEdison", "马园园
 
 # 测试人员：只有「关闭且已验证通过」的单子才指派到其账号下
 TESTER_MAP = {"吴树鹏": "test12-RGB"}
-# 责任人写的是测试本人/无账号同事时，按「问题归属」兜底派给对应研发（仅未关闭单）
-OWNER_FALLBACK = {"前端": "zilongiop"}
+# 指派规则：已关闭 -> 测试本人（吴树鹏）；未关闭 -> 对应研发
+TESTER_ACCOUNT = "test12-RGB"
+OWNER_ACCOUNT = {
+    "前端": "zilongiop",          # 马园园
+    "后端": "1471251198",         # 柴金星（后端数据处理）
+    "数据处理平台": "1471251198",  # 柴金星
+    "服务端": "ByteEdison",       # 李会会（架构 + 服务端）
+}
 
 # 飞书「责任人」 -> 问题归属（仅当归类为 产品/待确认 等未映射值时兜底）
 PERSON_OWNER = {"李会会": "服务端", "马园园": "前端"}
@@ -244,16 +250,11 @@ def build_issue(row):
     if info in INFO_LABELS:
         labels.append(info)
     person = txt(row.get("责任人"))
-    if person in ASSIGNEE_MAP:
-        assignees = [ASSIGNEE_MAP[person]]
-    elif person in TESTER_MAP:
-        verified = any(p in txt(row.get("测试回归验证结果")) for p in PASS_VERIFY)
-        if status == "关闭" and verified:
-            assignees = [TESTER_MAP[person]]
-        else:
-            assignees = [OWNER_FALLBACK[owner]] if (owner in OWNER_FALLBACK and status != "关闭") else []
+    if status == "关闭":
+        assignees = [TESTER_ACCOUNT]
     else:
-        assignees = [OWNER_FALLBACK[owner]] if (owner in OWNER_FALLBACK and status != "关闭") else []
+        acct = ASSIGNEE_MAP.get(person) or OWNER_ACCOUNT.get(own)
+        assignees = [acct] if acct else []
     return {"title": title, "body": body, "labels": labels, "assignees": assignees,
             "level": level, "state": state, "state_reason": reason,
             "status": {"verify": verify, "dev": dev, "level": level, "own": own}}
@@ -619,7 +620,10 @@ def main():
             cur_labels = list(built["labels"])
 
         # 3.5) 责任人指派（飞书责任人 -> GitHub Assignee）
-        want_as = built.get("assignees") or []
+        if issue["state"] == "closed" or built.get("status") == "关闭":
+            want_as = [TESTER_ACCOUNT]
+        else:
+            want_as = [a for a in (built.get("assignees") or []) if a != TESTER_ACCOUNT]
         cur_as = sorted(issue.get("assignees") or [])
         if sorted(want_as) != cur_as:
             log(f"  @ 指派 -> #{issue['number']}: {want_as or '清空'}")
