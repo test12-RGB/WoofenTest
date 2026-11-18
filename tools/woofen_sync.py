@@ -340,7 +340,12 @@ def create_issue(payload, dry):
     if dry:
         log(f"  [dry] create issue: {payload['title']}")
         return {}
-    return gh("-X", "POST", f"repos/{REPO}/issues", data=payload)
+    body = dict(payload)
+    body["type"] = "Bug"
+    resp = gh("-X", "POST", f"repos/{REPO}/issues", data=body)
+    if not ((resp or {}).get("type") or {}).get("name") == "Bug":
+        resp = gh("-X", "PATCH", f"repos/{REPO}/issues/{resp['number']}", data={"type": "Bug"})
+    return resp
 
 
 def gh_status_labels(issue):
@@ -532,7 +537,10 @@ def main():
         # 3) 内容同步：飞书 -> GitHub
         if content_hash != entry.get("bitable_hash"):
             log(f"  ~ 内容变更 -> 更新 #{issue['number']}: {built['title']}")
-            patch_issue(issue["number"], {"title": built["title"], "body": built["body"]}, dry)
+            patch_payload = {"title": built["title"], "body": built["body"]}
+            if ((issue.get("type") or {}).get("name")) != "Bug":
+                patch_payload["type"] = "Bug"
+            patch_issue(issue["number"], patch_payload, dry)
             set_labels(issue["number"], built["labels"], cur_labels, dry)
             cur_labels = list(built["labels"])
             updated += 1
