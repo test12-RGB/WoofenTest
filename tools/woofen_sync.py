@@ -191,6 +191,10 @@ def build_issue(row):
 
     owner = OWN_MAP.get(own) or PERSON_OWNER.get(txt(row.get("责任人")))
     labels = ([owner] if owner else []) + ([level] if level in LEVELS else [])
+    if status in STATE_LABELS:
+        labels.append(status)
+    if info in INFO_LABELS:
+        labels.append(info)
     person = txt(row.get("责任人"))
     if person in ASSIGNEE_MAP:
         assignees = [ASSIGNEE_MAP[person]]
@@ -340,13 +344,49 @@ def create_issue(payload, dry):
 
 
 def gh_status_labels(issue):
-    return sorted(l for l in issue["labels"] if l in OWNER_LABELS + LEVELS)
+    return sorted(l for l in issue["labels"] if l in ALL_MANAGED_LABELS)
 
 
 def bitable_fields_from_issue(issue, row):
-    """GitHub 开关（open/closed）-> 飞书回归字段；标签只表达归属，不再承载状态"""
+    """GitHub 标签/开关 -> 飞书状态字段（研发在仓库上操作后自动回写）"""
+    labels = set(issue["labels"])
     verify = txt(row.get("测试回归验证结果"))
+    dev = txt(row.get("研发归属类"))
     out = {}
+
+    info = next((l for l in INFO_LABELS if l in labels), None)
+    status = next((l for l in STATE_LABELS if l in labels), None)
+
+    if info:
+        target = INFO_LABEL_TO_FEISHU[info]
+        if dev != target:
+            out["研发归属类"] = [target]
+        if info == "非问题":
+            if verify != "非问题":
+                out["测试回归验证结果"] = ["非问题"]
+        elif info == "无法解决":
+            if verify != "暂不处理":
+                out["测试回归验证结果"] = ["暂不处理"]
+        return out
+
+    if status == "关闭":
+        if (not any(p in verify for p in PASS_VERIFY)
+                and verify not in ("非问题", "暂不处理", "重复问题")):
+            out["测试回归验证结果"] = ["验证PASS"]
+        return out
+    if status == "已解决":
+        if not dev.startswith("已修复"):
+            out["研发归属类"] = ["已修复-待验证"]
+        if verify != "待验证":
+            out["测试回归验证结果"] = ["待验证"]
+        return out
+    if status == "开放":
+        if dev.startswith("已修复"):
+            out["研发归属类"] = ["未修复-暂不处理"]
+        if any(p in verify for p in PASS_VERIFY) or verify in ("非问题", "待验证"):
+            out["测试回归验证结果"] = ["待修复"]
+        return out
+
     if issue["state"] == "closed":
         if (not any(p in verify for p in PASS_VERIFY)
                 and verify not in ("非问题", "暂不处理", "重复问题")):
@@ -457,7 +497,7 @@ def main():
                 "bitable_hash": content_hash,
                 "bitable_status": built["status"],
                 "gh_state": built["state"], "gh_labels": sorted(built["labels"]),
-                "gh_labels_status": sorted(l for l in built["labels"] if l in OWNER_LABELS + LEVELS),
+                "gh_labels_status": sorted(l for l in built["labels"] if l in ALL_MANAGED_LABELS),
                 "issue_updated_at": resp.get("updated_at"),
             }
             created += 1
@@ -554,7 +594,7 @@ def main():
             entry["bitable_status"] = cur_status
             entry["gh_state"] = cur_state
             entry["gh_labels"] = sorted(cur_labels)
-            entry["gh_labels_status"] = sorted(l for l in cur_labels if l in OWNER_LABELS + LEVELS)
+            entry["gh_labels_status"] = sorted(l for l in cur_labels if l in ALL_MANAGED_LABELS)
             entry["issue_updated_at"] = issue["updated_at"]
 
     if not dry:
