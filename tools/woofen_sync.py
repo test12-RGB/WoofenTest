@@ -566,6 +566,15 @@ def main():
             if entry and entry.get("issue"):
                 log(f"  !! {built['title']}: Issue 已不存在，跳过（原 #{entry['issue']}）")
                 continue
+            used = {e.get("bug_no") for e in state["records"].values() if e.get("bug_no")}
+            km = re.match(r"^BUG-(\d+)", built["title"])
+            if km:
+                n = int(km.group(1))
+                while n in used:
+                    n += 1
+                if n != int(km.group(1)):
+                    sp = re.match(r"^\S+\s", built["title"]).end()
+                    built["title"] = "BUG-%03d " % n + built["title"][sp:]
             log(f"  + 新建 Issue: {built['title']}")
             resp = create_issue({k: built[k] for k in ("title", "body", "labels", "assignees")
                                  if k != "assignees" or built.get("assignees")}, dry)
@@ -576,6 +585,7 @@ def main():
                 patch_issue(num, {"state": "closed", "state_reason": built["state_reason"] or "completed"}, dry)
             state["records"][rid] = {
                 "issue": num,
+                "bug_no": int(re.match(r"^BUG-(\d+)", built["title"]).group(1)) if re.match(r"^BUG-(\d+)", built["title"]) else None,
                 "bitable_hash": content_hash,
                 "bitable_status": built["status"],
                 "gh_state": built["state"], "gh_labels": sorted(built["labels"]),
