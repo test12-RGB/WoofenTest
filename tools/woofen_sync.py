@@ -48,6 +48,9 @@ DEFAULT_OWNER = {"后端": "柴金星", "服务端": "李会会"}
 # 飞书「责任人」 -> GitHub 账号（用于 Assignee 自动指派）
 ASSIGNEE_MAP = {"柴金星": "1471251198", "李会会": "ByteEdison", "马园园": "zilongiop"}
 
+# 测试人员：只有「关闭且已验证通过」的单子才指派到其账号下
+TESTER_MAP = {"吴树鹏": "test12-RGB"}
+
 # 飞书「责任人」 -> 问题归属（仅当归类为 产品/待确认 等未映射值时兜底）
 PERSON_OWNER = {"李会会": "服务端", "马园园": "前端"}
 
@@ -193,7 +196,14 @@ def build_issue(row):
     owner = OWN_MAP.get(own) or PERSON_OWNER.get(txt(row.get("责任人")))
     if owner:
         labels.append(owner)
-    assignees = [ASSIGNEE_MAP[txt(row.get("责任人"))]] if txt(row.get("责任人")) in ASSIGNEE_MAP else []
+    person = txt(row.get("责任人"))
+    if person in ASSIGNEE_MAP:
+        assignees = [ASSIGNEE_MAP[person]]
+    elif person in TESTER_MAP:
+        verified = any(p in txt(row.get("测试回归验证结果")) for p in PASS_VERIFY)
+        assignees = [TESTER_MAP[person]] if (status == "关闭" and verified) else []
+    else:
+        assignees = []
     return {"title": title, "body": body, "labels": labels, "assignees": assignees,
             "level": level, "state": state, "state_reason": reason,
             "status": {"verify": verify, "dev": dev, "level": level, "own": own}}
