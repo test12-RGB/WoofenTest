@@ -35,12 +35,12 @@ PASS_VERIFY = ("验证PASS", "复测通过")
 # 标签体系：BUG等级 / BUG状态 / BUG信息 / 问题归属
 STATE_LABELS = ("开放", "已解决", "关闭")
 INFO_LABELS = ("无法解决", "非问题", "重复问题")
-OWNER_LABELS = ("前端", "后端", "服务端", "采集平台", "固件")
+OWNER_LABELS = ("前端", "后端", "固件", "产品")
 ALL_MANAGED_LABELS = LEVELS + STATE_LABELS + INFO_LABELS + OWNER_LABELS
 
 # 飞书「问题归属类型」 -> 仓库「问题归属」标签
-OWN_MAP = {"前端": "前端", "后端": "后端", "服务端": "服务端",
-           "数据处理平台": "采集平台", "固件嵌入式": "固件"}
+OWN_MAP = {"前端": "前端", "后端": "后端", "服务端": "后端",
+           "数据处理平台": "后端", "固件嵌入式": "固件", "产品": "产品"}
 
 # 提报时的默认责任人（仅用于正文提示，不改飞书记录）
 DEFAULT_OWNER = {"后端": "柴金星", "服务端": "李会会"}
@@ -189,13 +189,8 @@ def build_issue(row):
         state = "closed"
         reason = "not_planned" if info in ("非问题", "重复问题", "无法解决") else "completed"
 
-    labels = ["bug"] + ([level] if level in LEVELS else [])
-    labels.append(status)
-    if info:
-        labels.append(info)
     owner = OWN_MAP.get(own) or PERSON_OWNER.get(txt(row.get("责任人")))
-    if owner:
-        labels.append(owner)
+    labels = [owner] if owner else []
     person = txt(row.get("责任人"))
     if person in ASSIGNEE_MAP:
         assignees = [ASSIGNEE_MAP[person]]
@@ -345,64 +340,21 @@ def create_issue(payload, dry):
 
 
 def gh_status_labels(issue):
-    return sorted(l for l in issue["labels"] if l in STATE_LABELS + INFO_LABELS + OWNER_LABELS)
+    return sorted(l for l in issue["labels"] if l in OWNER_LABELS)
 
 
 def bitable_fields_from_issue(issue, row):
-    """GitHub 标签/开关 -> 飞书状态字段（研发在仓库上操作后自动回写）"""
-    labels = set(issue["labels"])
+    """GitHub 开关（open/closed）-> 飞书回归字段；标签只表达归属，不再承载状态"""
     verify = txt(row.get("测试回归验证结果"))
-    dev = txt(row.get("研发归属类"))
     out = {}
-
-    info = next((l for l in INFO_LABELS if l in labels), None)
-    status = next((l for l in STATE_LABELS if l in labels), None)
-
-    # 1) BUG信息：非问题 / 重复问题 / 无法解决
-    if info:
-        target = INFO_LABEL_TO_FEISHU[info]
-        if dev != target:
-            out["研发归属类"] = [target]
-        if info == "非问题":
-            if verify != "非问题":
-                out["测试回归验证结果"] = ["非问题"]
-        elif info == "无法解决":
-            if verify != "暂不处理":
-                out["测试回归验证结果"] = ["暂不处理"]
-        return out
-
-    # 2) BUG状态
-    if status == "关闭":
-        if not any(p in verify for p in PASS_VERIFY):
-            out["测试回归验证结果"] = ["验证PASS"]
-        return out
-    if status == "已解决":
-        if not dev.startswith("已修复"):
-            out["研发归属类"] = ["已修复-待验证"]
-        if verify != "待验证":
-            out["测试回归验证结果"] = ["待验证"]
-        return out
-    if status == "开放":
-        if dev.startswith("已修复"):
-            out["研发归属类"] = ["未修复-暂不处理"]
-        if any(p in verify for p in PASS_VERIFY) or verify in ("非问题", "待验证"):
-            out["测试回归验证结果"] = ["待修复"]
-        return out
-
-    # 3) 研发没打状态标签、直接关单：沿用「关闭即验证通过」的历史判定
     if issue["state"] == "closed":
-        if any(p in verify for p in PASS_VERIFY):
-            return out
-        out["测试回归验证结果"] = ["验证PASS"]
-        return out
-
-    # 4) 未打标签且是开启状态：原本已验证通过/待验证的，退回待修复
-    if any(p in verify for p in PASS_VERIFY) or verify in ("非问题", "待验证"):
+        if (not any(p in verify for p in PASS_VERIFY)
+                and verify not in ("非问题", "暂不处理", "重复问题")):
+            out["测试回归验证结果"] = ["验证PASS"]
+    elif any(p in verify for p in PASS_VERIFY):
         out["测试回归验证结果"] = ["待修复"]
     return out
 
-
-# ---------------------------------------------------------------- 主流程
 
 def main():
     ap = argparse.ArgumentParser()
@@ -455,7 +407,7 @@ def main():
                 "bitable_hash": content_hash,
                 "bitable_status": built["status"],
                 "gh_state": built["state"], "gh_labels": sorted(built["labels"]),
-                "gh_labels_status": sorted(l for l in built["labels"] if l in STATE_LABELS + INFO_LABELS + OWNER_LABELS),
+                "gh_labels_status": sorted(l for l in built["labels"] if l in OWNER_LABELS),
                 "issue_updated_at": resp.get("updated_at"),
             }
             created += 1
@@ -552,7 +504,7 @@ def main():
             entry["bitable_status"] = cur_status
             entry["gh_state"] = cur_state
             entry["gh_labels"] = sorted(cur_labels)
-            entry["gh_labels_status"] = sorted(l for l in cur_labels if l in STATE_LABELS + INFO_LABELS + OWNER_LABELS)
+            entry["gh_labels_status"] = sorted(l for l in cur_labels if l in OWNER_LABELS)
             entry["issue_updated_at"] = issue["updated_at"]
 
     if not dry:
