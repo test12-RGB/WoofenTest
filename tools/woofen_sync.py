@@ -52,6 +52,8 @@ ASSIGNEE_MAP = {"柴金星": "1471251198", "李会会": "ByteEdison", "马园园
 
 # 测试人员：只有「关闭且已验证通过」的单子才指派到其账号下
 TESTER_MAP = {"吴树鹏": "test12-RGB"}
+# 责任人写的是测试本人/无账号同事时，按「问题归属」兜底派给对应研发（仅未关闭单）
+OWNER_FALLBACK = {"前端": "zilongiop"}
 
 # 飞书「责任人」 -> 问题归属（仅当归类为 产品/待确认 等未映射值时兜底）
 PERSON_OWNER = {"李会会": "服务端", "马园园": "前端"}
@@ -246,9 +248,12 @@ def build_issue(row):
         assignees = [ASSIGNEE_MAP[person]]
     elif person in TESTER_MAP:
         verified = any(p in txt(row.get("测试回归验证结果")) for p in PASS_VERIFY)
-        assignees = [TESTER_MAP[person]] if (status == "关闭" and verified) else []
+        if status == "关闭" and verified:
+            assignees = [TESTER_MAP[person]]
+        else:
+            assignees = [OWNER_FALLBACK[owner]] if (owner in OWNER_FALLBACK and status != "关闭") else []
     else:
-        assignees = []
+        assignees = [OWNER_FALLBACK[owner]] if (owner in OWNER_FALLBACK and status != "关闭") else []
     return {"title": title, "body": body, "labels": labels, "assignees": assignees,
             "level": level, "state": state, "state_reason": reason,
             "status": {"verify": verify, "dev": dev, "level": level, "own": own}}
