@@ -45,6 +45,12 @@ OWN_MAP = {"前端": "前端", "后端": "后端", "服务端": "服务端",
 # 提报时的默认责任人（仅用于正文提示，不改飞书记录）
 DEFAULT_OWNER = {"后端": "柴金星", "服务端": "李会会"}
 
+# 飞书「责任人」 -> GitHub 账号（用于 Assignee 自动指派）
+ASSIGNEE_MAP = {"柴金星": "1471251198", "李会会": "ByteEdison", "马园园": "zilongiop"}
+
+# 飞书「责任人」 -> 问题归属（仅当归类为 产品/待确认 等未映射值时兜底）
+PERSON_OWNER = {"李会会": "服务端", "马园园": "前端"}
+
 # 信息标签 -> 飞书「研发归属类」
 INFO_LABEL_TO_FEISHU = {
     "非问题": "非问题",
@@ -184,10 +190,11 @@ def build_issue(row):
     labels.append(status)
     if info:
         labels.append(info)
-    owner = OWN_MAP.get(own)
+    owner = OWN_MAP.get(own) or PERSON_OWNER.get(txt(row.get("责任人")))
     if owner:
         labels.append(owner)
-    return {"title": title, "body": body, "labels": labels,
+    assignees = [ASSIGNEE_MAP[txt(row.get("责任人"))]] if txt(row.get("责任人")) in ASSIGNEE_MAP else []
+    return {"title": title, "body": body, "labels": labels, "assignees": assignees,
             "level": level, "state": state, "state_reason": reason,
             "status": {"verify": verify, "dev": dev, "level": level, "own": own}}
 
@@ -283,7 +290,7 @@ def update_bitable_fields(record_id, fields, dry):
 def fetch_issues():
     r = run(["gh", "api", "--paginate",
              f"repos/{REPO}/issues?state=all&per_page=100&sort=created&direction=asc",
-             "--jq", ".[] | {number, title, state, body, updated_at, labels: [.labels[].name]}"])
+             "--jq", ".[] | {number, title, state, body, updated_at, labels: [.labels[].name], assignees: [.assignees[].login]}"])
     return [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
 
 
@@ -426,7 +433,8 @@ def main():
                 log(f"  !! {built['title']}: Issue 已不存在，跳过（原 #{entry['issue']}）")
                 continue
             log(f"  + 新建 Issue: {built['title']}")
-            resp = create_issue({k: built[k] for k in ("title", "body", "labels")}, dry)
+            resp = create_issue({k: built[k] for k in ("title", "body", "labels", "assignees")
+                                 if k != "assignees" or built.get("assignees")}, dry)
             if dry:
                 continue
             num = resp.get("number")
@@ -477,11 +485,25 @@ def main():
             cur_labels = list(built["labels"])
             updated += 1
 
-        # 4) 状态同步（GitHub 优先，飞书变动次之）
         gh_changed = (issue["state"] != entry.get("gh_state")
                       or gh_status_labels(issue) != entry.get("gh_labels_status", []))
         bt_changed = built["status"] != entry.get("bitable_status")
 
+        # 3.4) 标签对齐（归属兜底等不体现在正文里的差异）
+        if not gh_changed and sorted(built["labels"]) != sorted(cur_labels):
+            log(f"  # 标签对齐 -> #{issue['number']}: {built['labels']}")
+            set_labels(issue["number"], built["labels"], cur_labels, dry)
+            cur_labels = list(built["labels"])
+
+        # 3.5) 责任人指派（飞书责任人 -> GitHub Assignee）
+        want_as = built.get("assignees") or []
+        cur_as = sorted(issue.get("assignees") or [])
+        if sorted(want_as) != cur_as:
+            log(f"  @ 指派 -> #{issue['number']}: {want_as or '清空'}")
+            patch_issue(issue["number"], {"assignees": want_as}, dry)
+            issue["assignees"] = want_as
+
+        # 4) 状态同步（GitHub 优先，飞书变动次之）
         cur_hash, cur_status = content_hash, built["status"]
 
         if gh_changed:
