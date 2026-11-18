@@ -182,9 +182,21 @@ def attachment_section(rid, row, dry=False, pending=None):
     return "\n".join(lines)
 
 
+def freeze_title(built, entry):
+    """编号冻结：已建立过 Issue 的单子沿用首次编号，避免飞书自动编号重排导致标题漂移"""
+    frozen = (entry or {}).get("bug_no")
+    m = re.match(r"^\S+\s", built["title"])
+    if frozen and m:
+        built["title"] = "BUG-%03d " % frozen + built["title"][m.end():]
+
+
 def build_issue(row):
     """飞书记录 -> (title, body, level_label, desired_state, state_reason)"""
-    seq = txt(row.get("序号")) or "BUG"
+    seq_raw = txt(row.get("序号"))
+    if seq_raw.isdigit():
+        seq = "BUG-%03d" % int(seq_raw)
+    else:
+        seq = seq_raw or "BUG"
     short = txt(row.get("简写问题")).strip()
     desc = txt(row.get("问题描述")).strip()
     if not short:
@@ -540,13 +552,14 @@ def main():
     created = updated = pushed = 0
     for row in rows:
         rid = row["record_id"]
+        issue = by_marker.get(rid)
+        entry = state["records"].get(rid)
         built = build_issue(row)
+        freeze_title(built, entry)
         sec = attachment_section(rid, row, dry, ATTACH_PENDING)
         if sec:
             built["body"] = built["body"] + sec
         content_hash = sha({k: built[k] for k in ("title", "body", "labels")})
-        issue = by_marker.get(rid)
-        entry = state["records"].get(rid)
 
         # 1) 新记录 -> 建 Issue
         if issue is None:
@@ -575,7 +588,7 @@ def main():
         # 2) 已有 Issue：对齐映射
         if not entry:
             entry = state["records"][rid] = {
-                "issue": issue["number"], "bitable_hash": content_hash,
+                "issue": issue["number"], "bug_no": None, "bitable_hash": content_hash,
                 "bitable_status": built["status"], "gh_state": issue["state"],
                 "gh_labels": sorted(issue["labels"]), "gh_labels_status": gh_status_labels(issue),
                 "issue_updated_at": issue["updated_at"],
@@ -595,6 +608,10 @@ def main():
                         entry["bitable_hash"] = content_hash
                         pushed += 1
         entry["issue"] = issue["number"]
+        if not entry.get("bug_no"):
+            km = re.match(r"^BUG-(\d+)", issue["title"])
+            if km:
+                entry["bug_no"] = int(km.group(1))
 
         cur_state, cur_labels = issue["state"], list(issue["labels"])
 
