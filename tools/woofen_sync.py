@@ -23,6 +23,8 @@ import sys
 BASE_TOKEN = "Oo7LbHcD0aPFDCsYqeCc4jHEnnb"
 TABLE_ID = "tblIVSPELHJJidVJ"
 REPO = "brainvue-tech/TestBug"
+LARK = "/home/user/vm/resource-loader/bin/lark-cli"
+ATTACH_PENDING = []
 MASK_NAMES = True  # 仓库为公开，责任人脱敏；改为 False 可保留真实姓名
 
 STATE_DIR = "/home/user/Doubao/chats/38454352490236674/.woofen-sync"
@@ -127,6 +129,50 @@ def mask(v):
 
 
 # ---------------------------------------------------------------- 内容构建
+
+ATTACH_DIR = "attachments"
+RAW_BASE = f"https://github.com/{REPO}/raw/main/"
+
+
+def attachment_section(rid, row, dry=False, pending=None):
+    """把飞书附件字段里的图片下载到仓库 attachments/，返回正文里的附件段落"""
+    files = row.get("接口/网络分析") or []
+    if not isinstance(files, list) or not files:
+        return ""
+    seq = txt(row.get("序号")) or rid
+    lines = ["", "## 附件截图", ""]
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        name = f.get("name") or "file"
+        token = f.get("file_token")
+        if not token:
+            continue
+        sub = f"{ATTACH_DIR}/{seq}"
+        path = os.path.join(sub, name)
+        if not os.path.exists(path):
+            if dry:
+                if pending is not None:
+                    pending.append(path)
+            else:
+                os.makedirs(sub, exist_ok=True)
+                r = subprocess.run([LARK, "base", "+record-download-attachment",
+                                    "--base-token", BASE_TOKEN, "--table-id", TABLE_ID,
+                                    "--record-id", rid, "--file-token", token,
+                                    "--output", path, "--overwrite", "--as", "user"],
+                                   capture_output=True, text=True)
+                if r.returncode != 0:
+                    log(f"  ! 附件下载失败 {name}: {r.stderr.strip()[:80]}")
+                    continue
+                if pending is not None:
+                    pending.append(path)
+        if name.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+            lines.append(f"![{name}]({RAW_BASE}{sub}/{name})")
+        else:
+            lines.append(f"[{name}]({RAW_BASE}{sub}/{name})")
+        lines.append("")
+    return "\n".join(lines)
+
 
 def build_issue(row):
     """飞书记录 -> (title, body, level_label, desired_state, state_reason)"""
@@ -336,6 +382,15 @@ def patch_issue(number, payload, dry):
     return gh("-X", "PATCH", f"repos/{REPO}/issues/{number}", data=payload)
 
 
+def git(*args):
+    r = subprocess.run(["-c", "user.email=bot@local", "-c", "user.name=woofen-sync"] and
+                       ["git"] + ["-c", "user.email=bot@local", "-c", "user.name=woofen-sync"] + list(args),
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip()[:200])
+    return r.stdout
+
+
 def create_issue(payload, dry):
     if dry:
         log(f"  [dry] create issue: {payload['title']}")
@@ -402,13 +457,11 @@ def bitable_fields_from_issue(issue, row):
 
 
 def _issue_node_ids(nums):
-    """批量取 Issue node_id"""
-    import woofen_project as wp
-    parts = []
-    for i, n in enumerate(nums):
-        parts.append('n%d:repository(owner:"brainvue-tech",name:"TestBug"){issue(number:%d){id}}' % (i, n))
-    data = wp.gql("query{" + " ".join(parts) + "}")
-    return {n: data["n%d" % i]["repository"]["issue"]["id"] for i, n in enumerate(nums)}
+    """批量取 Issue node_id（走 REST，避免 GraphQL 别名受 owner 限制）"""
+    out = {}
+    for n in nums:
+        out[n] = gh(f"repos/{REPO}/issues/{n}")["node_id"]
+    return out
 
 
 def sync_project(state):
@@ -452,6 +505,8 @@ def sync_project(state):
 
 
 def main():
+    global ATTACH_PENDING
+    ATTACH_PENDING = []
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
@@ -480,6 +535,9 @@ def main():
     for row in rows:
         rid = row["record_id"]
         built = build_issue(row)
+        sec = attachment_section(rid, row, dry, ATTACH_PENDING)
+        if sec:
+            built["body"] = built["body"] + sec
         content_hash = sha({k: built[k] for k in ("title", "body", "labels")})
         issue = by_marker.get(rid)
         entry = state["records"].get(rid)
@@ -606,6 +664,14 @@ def main():
             entry["issue_updated_at"] = issue["updated_at"]
 
     if not dry:
+        if ATTACH_PENDING:
+            try:
+                git("add", "attachments")
+                git("commit", "-m", "同步飞书附件截图 %d 个" % len(ATTACH_PENDING))
+                git("push", "origin", "main")
+                log("  + 附件入库 %d 个" % len(ATTACH_PENDING))
+            except Exception as exc:
+                log("  ! 附件提交失败: %s" % str(exc)[:120])
         try:
             sync_project(state)
         except Exception as exc:
