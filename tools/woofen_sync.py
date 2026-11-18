@@ -34,7 +34,7 @@ PASS_VERIFY = ("验证PASS", "复测通过")
 
 # 标签体系：BUG等级 / BUG状态 / BUG信息 / 问题归属
 STATE_LABELS = ("开放", "已解决", "关闭")
-INFO_LABELS = ("征求信息", "无法解决", "非问题", "重复问题")
+INFO_LABELS = ("无法解决", "非问题", "重复问题")
 OWNER_LABELS = ("前端", "后端", "采集平台", "固件")
 ALL_MANAGED_LABELS = LEVELS + STATE_LABELS + INFO_LABELS + OWNER_LABELS
 
@@ -46,7 +46,6 @@ INFO_LABEL_TO_FEISHU = {
     "非问题": "非问题",
     "重复问题": "重复问题",
     "无法解决": "未修复-无法修复",
-    "征求信息": "需求未明确需产品确认",
 }
 
 
@@ -58,7 +57,7 @@ def decide_state(dev, verify):
         return "关闭", "重复问题"
     if dev == "未修复-无法修复":
         return "关闭", "无法解决"
-    info = "征求信息" if ("需求未明确" in dev or "待产品确认" in dev) else None
+    info = None
     if any(p in verify for p in PASS_VERIFY):
         return "关闭", info
     if "已修复" in dev or verify == "待验证":
@@ -336,7 +335,7 @@ def bitable_fields_from_issue(issue, row):
     info = next((l for l in INFO_LABELS if l in labels), None)
     status = next((l for l in STATE_LABELS if l in labels), None)
 
-    # 1) BUG信息：非问题 / 重复问题 / 无法解决 / 征求信息
+    # 1) BUG信息：非问题 / 重复问题 / 无法解决
     if info:
         target = INFO_LABEL_TO_FEISHU[info]
         if dev != target:
