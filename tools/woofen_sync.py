@@ -129,15 +129,28 @@ def build_issue(row):
     def r(k, v):
         return f"| {k} | {txt(v) or '—'} |"
 
+    status, info_tag = decide_state(txt(row.get("研发归属类")), txt(row.get("测试回归验证结果")))
     info = "\n".join([
         "## 基本信息", "", "| 项目 | 内容 |", "| --- | --- |",
-        r("序号", row.get("序号")), r("BUG 等级", row.get("BUG级别")),
-        r("问题类型", row.get("问题类型")), r("问题归属", row.get("问题归属类型")),
-        r("责任人（脱敏）", mask(row.get("责任人"))), r("APP 版本", row.get("APP版本")),
-        r("固件版本", row.get("固件版本")), r("提单日期", today(row.get("提单日期"))),
-        r("研发状态", row.get("研发归属类")), r("回归版本", row.get("回归版本")),
-        r("回归日期", today(row.get("回归日期"))), r("验证结果", row.get("测试回归验证结果")),
+        r("BUG 序号", row.get("序号")),
+        r("BUG 等级", row.get("BUG级别")),
+        r("BUG 状态", status),
+        r("BUG 信息", info_tag),
+        r("问题归属", row.get("问题归属类型")),
+        r("责任人（脱敏）", mask(row.get("责任人"))),
+        r("提单日期", today(row.get("提单日期"))),
         r("解决日期", today(row.get("解决日期"))),
+        r("提单版本", row.get("提单版本")),
+        r("解决版本", row.get("解决版本")),
+        r("回归版本", row.get("回归版本")),
+        r("回归日期", today(row.get("回归日期"))),
+        "",
+        "### 附加信息", "", "| 项目 | 内容 |", "| --- | --- |",
+        r("问题类型", row.get("问题类型")),
+        r("APP 版本", row.get("APP版本")),
+        r("固件版本", row.get("固件版本")),
+        r("研发归属类", row.get("研发归属类")),
+        r("测试回归验证结果", row.get("测试回归验证结果")),
     ])
     body = "\n".join([
         f"<!-- woofen-sync:{row['record_id']} -->",
