@@ -356,6 +356,56 @@ def bitable_fields_from_issue(issue, row):
     return out
 
 
+def _issue_node_ids(nums):
+    """批量取 Issue node_id"""
+    import woofen_project as wp
+    parts = []
+    for i, n in enumerate(nums):
+        parts.append('n%d:repository(owner:"brainvue-tech",name:"TestBug"){issue(number:%d){id}}' % (i, n))
+    data = wp.gql("query{" + " ".join(parts) + "}")
+    return {n: data["n%d" % i]["repository"]["issue"]["id"] for i, n in enumerate(nums)}
+
+
+def sync_project(state):
+    """把 等级/状态/信息 刷到组织看板字段（与 state 里记录的旧值比较，只写变化的）"""
+    import woofen_project as wp
+    pending, fresh = [], []
+    for entry in state["records"].values():
+        num = entry.get("issue")
+        if not num:
+            continue
+        bs = entry.get("bitable_status") or {}
+        status, info = decide_state(bs.get("dev", ""), bs.get("verify", ""))
+        vals = {"level": bs.get("level", ""), "status": status, "info": info}
+        item = entry.get("project_item")
+        if not item:
+            fresh.append((entry, vals))
+        elif vals != (entry.get("project_values") or {}):
+            pending.append((entry, item, vals))
+
+    if fresh:
+        nums = [e["issue"] for e, _ in fresh]
+        try:
+            nodes = _issue_node_ids(nums)
+            items = wp.add_items([nodes[n] for n in nums])
+            for (entry, vals), n in zip(fresh, nums):
+                entry["project_item"] = items[nodes[n]]
+                entry["project_values"] = vals
+                wp.set_fields(entry["project_item"], vals["level"], vals["status"], vals["info"])
+            log("  + 看板入板 %d 条" % len(fresh))
+        except Exception as exc:
+            log("  ! 看板入板失败: %s" % str(exc)[:120])
+
+    if pending:
+        try:
+            wp.batch_set([(item, v["level"], v["status"], v["info"]) for _, item, v in pending])
+            for entry, _item, vals in pending:
+                entry["project_values"] = vals
+            log("  + 看板字段更新 %d 条" % len(pending))
+        except Exception as exc:
+            log("  ! 看板字段更新失败: %s" % str(exc)[:120])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -508,6 +558,10 @@ def main():
             entry["issue_updated_at"] = issue["updated_at"]
 
     if not dry:
+        try:
+            sync_project(state)
+        except Exception as exc:
+            log("  ! 看板同步异常: %s" % str(exc)[:120])
         tmp = STATE_FILE + ".tmp"
         json.dump(state, open(tmp, "w"), ensure_ascii=False, indent=1)
         os.replace(tmp, STATE_FILE)
