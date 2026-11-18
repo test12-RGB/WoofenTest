@@ -35,11 +35,15 @@ PASS_VERIFY = ("验证PASS", "复测通过")
 # 标签体系：BUG等级 / BUG状态 / BUG信息 / 问题归属
 STATE_LABELS = ("开放", "已解决", "关闭")
 INFO_LABELS = ("无法解决", "非问题", "重复问题")
-OWNER_LABELS = ("前端", "后端", "采集平台", "固件")
+OWNER_LABELS = ("前端", "后端", "服务端", "采集平台", "固件")
 ALL_MANAGED_LABELS = LEVELS + STATE_LABELS + INFO_LABELS + OWNER_LABELS
 
 # 飞书「问题归属类型」 -> 仓库「问题归属」标签
-OWN_MAP = {"前端": "前端", "后端": "后端", "数据处理平台": "采集平台", "固件嵌入式": "固件"}
+OWN_MAP = {"前端": "前端", "后端": "后端", "服务端": "服务端",
+           "数据处理平台": "采集平台", "固件嵌入式": "固件"}
+
+# 提报时的默认责任人（仅用于正文提示，不改飞书记录）
+DEFAULT_OWNER = {"后端": "柴金星", "服务端": "李会会"}
 
 # 信息标签 -> 飞书「研发归属类」
 INFO_LABEL_TO_FEISHU = {
@@ -136,7 +140,9 @@ def build_issue(row):
         r("BUG 状态", status),
         r("BUG 信息", info_tag),
         r("问题归属", row.get("问题归属类型")),
-        r("责任人（脱敏）", mask(row.get("责任人"))),
+        r("责任人（脱敏）", mask(row.get("责任人")) or (
+            f"待指派（默认 {DEFAULT_OWNER[OWN_MAP[txt(row.get('问题归属类型'))]]}）"
+            if OWN_MAP.get(txt(row.get('问题归属类型'))) in DEFAULT_OWNER else None)),
         r("提单日期", today(row.get("提单日期"))),
         r("解决日期", today(row.get("解决日期"))),
         r("提单版本", row.get("提单版本")),
