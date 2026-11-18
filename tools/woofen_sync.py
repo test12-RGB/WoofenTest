@@ -190,7 +190,7 @@ def build_issue(row):
         reason = "not_planned" if info in ("非问题", "重复问题", "无法解决") else "completed"
 
     owner = OWN_MAP.get(own) or PERSON_OWNER.get(txt(row.get("责任人")))
-    labels = [owner] if owner else []
+    labels = ([owner] if owner else []) + ([level] if level in LEVELS else [])
     person = txt(row.get("责任人"))
     if person in ASSIGNEE_MAP:
         assignees = [ASSIGNEE_MAP[person]]
@@ -340,7 +340,7 @@ def create_issue(payload, dry):
 
 
 def gh_status_labels(issue):
-    return sorted(l for l in issue["labels"] if l in OWNER_LABELS)
+    return sorted(l for l in issue["labels"] if l in OWNER_LABELS + LEVELS)
 
 
 def bitable_fields_from_issue(issue, row):
@@ -457,7 +457,7 @@ def main():
                 "bitable_hash": content_hash,
                 "bitable_status": built["status"],
                 "gh_state": built["state"], "gh_labels": sorted(built["labels"]),
-                "gh_labels_status": sorted(l for l in built["labels"] if l in OWNER_LABELS),
+                "gh_labels_status": sorted(l for l in built["labels"] if l in OWNER_LABELS + LEVELS),
                 "issue_updated_at": resp.get("updated_at"),
             }
             created += 1
@@ -554,7 +554,7 @@ def main():
             entry["bitable_status"] = cur_status
             entry["gh_state"] = cur_state
             entry["gh_labels"] = sorted(cur_labels)
-            entry["gh_labels_status"] = sorted(l for l in cur_labels if l in OWNER_LABELS)
+            entry["gh_labels_status"] = sorted(l for l in cur_labels if l in OWNER_LABELS + LEVELS)
             entry["issue_updated_at"] = issue["updated_at"]
 
     if not dry:
