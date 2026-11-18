@@ -189,7 +189,7 @@ def build_issue(row):
 
 # ---------------------------------------------------------------- 飞书读写
 
-def fetch_rows():
+def _list_once():
     os.makedirs(STATE_DIR, exist_ok=True)
     out = os.path.join(STATE_DIR, "bitable.ndjson")
     man = os.path.join(STATE_DIR, "bitable-manifest.json")
@@ -200,7 +200,6 @@ def fetch_rows():
              "--table-id", TABLE_ID, "--as", "user", "--output", out, "--overwrite"], check=False)
     if r.returncode != 0:
         raise RuntimeError(f"record-list failed: {(r.stderr or r.stdout)[:400]}")
-    # stdout 是 manifest；记录在 record file
     m = json.loads(r.stdout) if r.stdout.strip().startswith("{") else {}
     if "record_file" not in m:
         m = json.load(open(man)) if os.path.exists(man) else m
@@ -209,6 +208,55 @@ def fetch_rows():
     if m.get("has_more"):
         raise RuntimeError("记录超过单页上限，需要分页处理")
     return rows
+
+
+def _record_get(rid):
+    """单条精读：绕过 record-list 偶发的上一版本快照"""
+    out = os.path.join(STATE_DIR, f"rec-{rid}.ndjson")
+    man = os.path.join(STATE_DIR, f"rec-{rid}.json")
+    for f in (out, man):
+        if os.path.exists(f):
+            os.unlink(f)
+    r = run(["lark-cli", "base", "+record-get", "--base-token", BASE_TOKEN,
+             "--table-id", TABLE_ID, "--record-id", rid, "--as", "user",
+             "--output", out, "--overwrite"], check=False)
+    path = out
+    if r.returncode == 0 and r.stdout.strip():
+        try:
+            m = json.loads(r.stdout)
+            if isinstance(m, dict) and "record_file" in m:
+                path = m["record_file"]
+        except Exception:
+            pass
+    lines = [l for l in open(path) if l.strip()] if os.path.exists(path) else []
+    if not lines:
+        return None
+    row = json.loads(lines[0])
+    return row.get("fields", row)
+
+
+def fetch_rows():
+    """读两遍，字段有出入的记录用 record-get 精读校正（飞书 list 偶发返回旧快照）"""
+    a = _list_once()
+    b = _list_once()
+    key = lambda r: r["record_id"]
+    ma = {key(r): r for r in a}
+    mb = {key(r): r for r in b}
+    fixed = 0
+    for rid, ra in ma.items():
+        rb = mb.get(rid)
+        if rb is None:
+            continue
+        if json.dumps(ra, sort_keys=True, ensure_ascii=False) != json.dumps(rb, sort_keys=True, ensure_ascii=False):
+            authoritative = _record_get(rid)
+            if authoritative:
+                row = dict(authoritative)
+                row["record_id"] = rid
+                ma[rid] = row
+                fixed += 1
+    if fixed:
+        log(f"  ! {fixed} 条记录两次读取不一致，已用单条精读校正")
+    return [ma[key(r)] for r in a]
 
 
 def update_bitable_fields(record_id, fields, dry):
