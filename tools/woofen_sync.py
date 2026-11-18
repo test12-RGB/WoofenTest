@@ -3,7 +3,7 @@
 
 方向约定
 - 内容（标题/描述/等级/责任人/版本…）：飞书 -> GitHub 覆盖
-- 状态（是否关闭、P 等级、invalid/duplicate）：GitHub 优先
+- 状态（BUG状态/信息标签、是否关闭、P 等级）：GitHub 优先
 - 新增飞书记录：自动建 Issue；GitHub 改状态：回写飞书「测试回归验证结果 / 研发归属类 / BUG级别」
 
 用法
@@ -30,31 +30,40 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 LOG_FILE = os.path.join(STATE_DIR, "sync.log")
 
 LEVELS = ("P0", "P1", "P2", "P3")
-STATUS_LABELS = ("invalid", "duplicate", "fixed-pending-verify")
 PASS_VERIFY = ("验证PASS", "复测通过")
 
-# 研发归属类 -> GitHub 标签（与飞书选项一一对应）
-DEV_LABELS = ("已修复-待验证", "已修复-下个版本验证", "未修复-待产品确认", "未修复-无法修复")
-DEV_MAP = {
-    "已修复-待验证": "已修复-待验证",
-    "已修复-下个版本验证": "已修复-下个版本验证",
-    "需求未明确需产品确认": "未修复-待产品确认",
-    "未修复-无法修复": "未修复-无法修复",
-}
-VERIFY_LABELS = ("验证PASS", "验证FAIL")
-ALL_MANAGED_LABELS = LEVELS + STATUS_LABELS + DEV_LABELS + VERIFY_LABELS
+# 标签体系：BUG等级 / BUG状态 / BUG信息 / 问题归属
+STATE_LABELS = ("开放", "已解决", "关闭")
+INFO_LABELS = ("征求信息", "无法解决", "非问题", "重复问题")
+OWNER_LABELS = ("前端", "后端", "采集平台", "固件")
+ALL_MANAGED_LABELS = LEVELS + STATE_LABELS + INFO_LABELS + OWNER_LABELS
 
-# GitHub 标签 -> 飞书「研发归属类」选项（研发打结果后回写）
-DEV_LABEL_TO_FEISHU = {
-    "已修复-待验证": "已修复-待验证",
-    "已修复-下个版本验证": "已修复-下个版本验证",
-    "未修复-待产品确认": "需求未明确需产品确认",
-    "未修复-无法修复": "未修复-无法修复",
+# 飞书「问题归属类型」 -> 仓库「问题归属」标签
+OWN_MAP = {"前端": "前端", "后端": "后端", "数据处理平台": "采集平台", "固件嵌入式": "固件"}
+
+# 信息标签 -> 飞书「研发归属类」
+INFO_LABEL_TO_FEISHU = {
+    "非问题": "非问题",
+    "重复问题": "重复问题",
+    "无法解决": "未修复-无法修复",
+    "征求信息": "需求未明确需产品确认",
 }
-# GitHub 标签 -> 飞书「测试回归验证结果」选项
-VERIFY_LABEL_TO_FEISHU = {"验证PASS": "验证PASS", "验证FAIL": "验证FAIL"}
-# 研发打了「已修复」类标签但还没出验证结论时，飞书验证结果置为待验证
-PENDING_VERIFY = ("待验证",)
+
+
+def decide_state(dev, verify):
+    """飞书状态字段 -> (BUG状态, BUG信息)"""
+    if "非问题" in dev or "非问题" in verify:
+        return "关闭", "非问题"
+    if "重复" in dev:
+        return "关闭", "重复问题"
+    if dev == "未修复-无法修复":
+        return "关闭", "无法解决"
+    info = "征求信息" if ("需求未明确" in dev or "待产品确认" in dev) else None
+    if any(p in verify for p in PASS_VERIFY):
+        return "关闭", info
+    if "已修复" in dev or verify == "待验证":
+        return "已解决", info
+    return "开放", info
 
 
 # ---------------------------------------------------------------- 基础工具
@@ -145,29 +154,24 @@ def build_issue(row):
     level = txt(row.get("BUG级别"))
     dev = txt(row.get("研发归属类"))
     verify = txt(row.get("测试回归验证结果"))
+    own = txt(row.get("问题归属类型"))
+
+    status, info = decide_state(dev, verify)
     state, reason = "open", None
-    if any(p in verify for p in PASS_VERIFY):
-        state, reason = "closed", "completed"
-    elif "非问题" in dev or "非问题" in verify:
-        state, reason = "closed", "not_planned"
-    elif "重复" in dev:
-        state, reason = "closed", "not_planned"
+    if status == "关闭":
+        state = "closed"
+        reason = "not_planned" if info in ("非问题", "重复问题", "无法解决") else "completed"
+
     labels = ["bug"] + ([level] if level in LEVELS else [])
-    if "非问题" in dev or "非问题" in verify:
-        labels.append("invalid")
-    elif "重复" in dev:
-        labels.append("duplicate")
-    elif "已修复" in dev:
-        labels.append("fixed-pending-verify")
-    if dev in DEV_MAP:
-        labels.append(DEV_MAP[dev])
-    if any(p in verify for p in PASS_VERIFY):
-        labels.append("验证PASS")
-    elif "FAIL" in verify.upper() or "不通过" in verify:
-        labels.append("验证FAIL")
+    labels.append(status)
+    if info:
+        labels.append(info)
+    owner = OWN_MAP.get(own)
+    if owner:
+        labels.append(owner)
     return {"title": title, "body": body, "labels": labels,
             "level": level, "state": state, "state_reason": reason,
-            "status": {"verify": verify, "dev": dev, "level": level}}
+            "status": {"verify": verify, "dev": dev, "level": level, "own": own}}
 
 
 # ---------------------------------------------------------------- 飞书读写
@@ -258,60 +262,59 @@ def create_issue(payload, dry):
 
 
 def gh_status_labels(issue):
-    return sorted(l for l in issue["labels"] if l in STATUS_LABELS + DEV_LABELS + VERIFY_LABELS)
+    return sorted(l for l in issue["labels"] if l in STATE_LABELS + INFO_LABELS + OWNER_LABELS)
 
 
 def bitable_fields_from_issue(issue, row):
-    """GitHub 状态/标签 -> 飞书状态字段（研发在仓库上打结果后自动回写）"""
+    """GitHub 标签/开关 -> 飞书状态字段（研发在仓库上操作后自动回写）"""
     labels = set(issue["labels"])
     verify = txt(row.get("测试回归验证结果"))
     dev = txt(row.get("研发归属类"))
     out = {}
 
-    # 1) 非问题 / 重复问题：最高优先级
-    if issue["state"] == "closed" or "invalid" in labels or "duplicate" in labels:
-        if "invalid" in labels:
-            if verify != "非问题":
-                out["测试回归验证结果"] = ["非问题"]
-            if dev != "非问题":
-                out["研发归属类"] = ["非问题"]
-            return out
-        if "duplicate" in labels:
-            if dev != "重复问题":
-                out["研发归属类"] = ["重复问题"]
-            return out
+    info = next((l for l in INFO_LABELS if l in labels), None)
+    status = next((l for l in STATE_LABELS if l in labels), None)
 
-    # 2) 研发归属类标签（已修复-待验证 / 已修复-下个版本验证 / 未修复-待产品确认 / 未修复-无法修复）
-    dev_label = next((l for l in DEV_LABELS if l in labels), None)
-    if dev_label:
-        target = DEV_LABEL_TO_FEISHU[dev_label]
+    # 1) BUG信息：非问题 / 重复问题 / 无法解决 / 征求信息
+    if info:
+        target = INFO_LABEL_TO_FEISHU[info]
         if dev != target:
             out["研发归属类"] = [target]
-
-    # 3) 验证标签
-    if "验证FAIL" in labels:
-        if not any(x in verify for x in ("FAIL", "不通过")):
-            out["测试回归验证结果"] = ["验证FAIL"]
+        if info == "非问题":
+            if verify != "非问题":
+                out["测试回归验证结果"] = ["非问题"]
+        elif info == "无法解决":
+            if verify != "暂不处理":
+                out["测试回归验证结果"] = ["暂不处理"]
         return out
-    if "验证PASS" in labels:
-        if not any(x in verify for x in PASS_VERIFY):
+
+    # 2) BUG状态
+    if status == "关闭":
+        if not any(p in verify for p in PASS_VERIFY):
             out["测试回归验证结果"] = ["验证PASS"]
         return out
-
-    # 4) 已修复但验证结果还空着 -> 待验证（不覆盖飞书已有的「待修复」等结论）
-    if dev_label and dev_label.startswith("已修复") and not verify:
-        out["测试回归验证结果"] = ["待验证"]
+    if status == "已解决":
+        if not dev.startswith("已修复"):
+            out["研发归属类"] = ["已修复-待验证"]
+        if verify != "待验证":
+            out["测试回归验证结果"] = ["待验证"]
+        return out
+    if status == "开放":
+        if dev.startswith("已修复"):
+            out["研发归属类"] = ["未修复-暂不处理"]
+        if any(p in verify for p in PASS_VERIFY) or verify in ("非问题", "待验证"):
+            out["测试回归验证结果"] = ["待修复"]
         return out
 
-    # 5) 其余：关闭且无任何状态标签时，沿用历史上「关闭即视为验证通过」的判定
+    # 3) 研发没打状态标签、直接关单：沿用「关闭即验证通过」的历史判定
     if issue["state"] == "closed":
-        if any(x in verify for x in PASS_VERIFY + ("非问题",)):
+        if any(p in verify for p in PASS_VERIFY):
             return out
         out["测试回归验证结果"] = ["验证PASS"]
         return out
 
-    # 6) 重新打开：原本已验证通过/非问题的，回到待修复
-    if any(x in verify for x in PASS_VERIFY) or verify == "非问题":
+    # 4) 未打标签且是开启状态：原本已验证通过/待验证的，退回待修复
+    if any(p in verify for p in PASS_VERIFY) or verify in ("非问题", "待验证"):
         out["测试回归验证结果"] = ["待修复"]
     return out
 
@@ -368,7 +371,7 @@ def main():
                 "bitable_hash": content_hash,
                 "bitable_status": built["status"],
                 "gh_state": built["state"], "gh_labels": sorted(built["labels"]),
-                "gh_labels_status": sorted(l for l in built["labels"] if l in STATUS_LABELS + DEV_LABELS + VERIFY_LABELS),
+                "gh_labels_status": sorted(l for l in built["labels"] if l in STATE_LABELS + INFO_LABELS + OWNER_LABELS),
                 "issue_updated_at": resp.get("updated_at"),
             }
             created += 1
@@ -386,7 +389,7 @@ def main():
             # 无状态文件时也做一次权威状态对齐：GitHub 已关闭/已标记的，回写飞书
             seed_fields = bitable_fields_from_issue(issue, row)
             seed_fields = {k: v for k, v in seed_fields.items() if txt(row.get(k)) != txt(v)}
-            if issue["state"] == "closed" or "fixed-pending-verify" in issue["labels"]:
+            if issue["state"] == "closed" or any(l in issue["labels"] for l in STATE_LABELS):
                 if seed_fields:
                     log(f"  => 收编时对齐状态 -> 飞书 {rid}: {seed_fields}")
                     if update_bitable_fields(rid, seed_fields, dry):
@@ -451,7 +454,7 @@ def main():
             entry["bitable_status"] = cur_status
             entry["gh_state"] = cur_state
             entry["gh_labels"] = sorted(cur_labels)
-            entry["gh_labels_status"] = sorted(l for l in cur_labels if l in STATUS_LABELS + DEV_LABELS + VERIFY_LABELS)
+            entry["gh_labels_status"] = sorted(l for l in cur_labels if l in STATE_LABELS + INFO_LABELS + OWNER_LABELS)
             entry["issue_updated_at"] = issue["updated_at"]
 
     if not dry:
