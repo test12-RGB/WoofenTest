@@ -552,6 +552,10 @@ def main():
     created = updated = pushed = 0
     for row in rows:
         rid = row["record_id"]
+        if txt(row.get("序号")).strip() == "" and not txt(row.get("简写问题")).strip() \
+                and not txt(row.get("问题描述")).strip():
+            log("  - 跳过空记录（序号与内容均为空）")
+            continue
         issue = by_marker.get(rid)
         entry = state["records"].get(rid)
         built = build_issue(row)
